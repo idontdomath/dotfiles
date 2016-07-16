@@ -137,6 +137,33 @@ install_dotfiles () {
   done
 }
 
+setup_rbenv () {
+
+ info 'setting up rbenv'
+
+ if ( type rbenv > /dev/null )
+  then
+      # installing this version to fix some local dependencies 
+      # before migrating to stable
+      rbenv install 2.0.0-p648 -s
+      rbenv global 2.0.0-p648
+  fi
+
+}
+
+# this install usual ruby tools that i use globally
+setup_ruby_toolbox() {
+
+ info 'installing ruby tools'
+
+ if ( type gem > /dev/null )
+ then
+     gem install bundler
+     gem install foreman   
+ fi
+
+}
+
 #setup_gitconfig
 install_dotfiles
 
@@ -151,6 +178,9 @@ then
     fail "error installing dependencies"
   fi
 fi
+
+setup_rbenv
+setup_ruby_toolbox
 
 echo ''
 echo '  All installed!'

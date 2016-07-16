@@ -10,6 +10,7 @@ brew 'wget'
 brew 'pwgen'
 brew 'tmux'
 brew 'htop'
+brew 'rbenv'
 
 cask 'google-chrome'
 cask 'firefox'
