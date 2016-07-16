@@ -8,6 +8,8 @@ brew 'nvm'
 brew 'postgres'
 brew 'wget'
 brew 'pwgen'
+brew 'tmux'
+brew 'htop'
 
 cask 'google-chrome'
 cask 'firefox'
