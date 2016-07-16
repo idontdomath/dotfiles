@@ -1,6 +1,6 @@
 # idontdomath dotfiles
 
-This is my approach to personal dotfiles, highly based on [holman dotfiles](https://raw.githubusercontent.com/holman/dotfiles/master/README.md) which shares a view with my me on organizing stuff (the topical approach).
+This is my approach to personal dotfiles, highly based on [holman dotfiles](https://github.com/holman/dotfiles) with whom I share the topical approach.
 
 As i'm using it's base ideas and scripts for symlinking and loading, so if you if you want to go deeper look, take a look at his repo.
 
