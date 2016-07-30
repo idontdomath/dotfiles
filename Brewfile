@@ -14,6 +14,7 @@ brew 'rbenv'
 brew 'heroku'
 brew 'python'
 brew 'python3'
+brew 'go'
 
 cask 'google-chrome'
 cask 'firefox'
