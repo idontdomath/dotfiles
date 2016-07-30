@@ -164,6 +164,20 @@ setup_ruby_toolbox() {
 
 }
 
+# this install usual ruby tools that i use globally
+setup_python_toolbox() {
+
+ info 'installing ruby tools'
+
+ if ( type pip > /dev/null )
+ then
+     pip install virtualenv
+ fi
+
+}
+
+
+
 #setup_gitconfig
 install_dotfiles
 
@@ -181,6 +195,7 @@ fi
 
 setup_rbenv
 setup_ruby_toolbox
+setup_python_toolbox
 
 echo ''
 echo '  All installed!'

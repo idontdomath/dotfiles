@@ -12,6 +12,8 @@ brew 'tmux'
 brew 'htop'
 brew 'rbenv'
 brew 'heroku'
+brew 'python'
+brew 'python3'
 
 cask 'google-chrome'
 cask 'firefox'
