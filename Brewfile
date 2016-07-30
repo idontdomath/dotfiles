@@ -11,6 +11,7 @@ brew 'pwgen'
 brew 'tmux'
 brew 'htop'
 brew 'rbenv'
+brew 'heroku'
 
 cask 'google-chrome'
 cask 'firefox'
