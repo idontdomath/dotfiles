@@ -147,6 +147,7 @@ setup_rbenv () {
       # before migrating to stable
       rbenv install 2.0.0-p648 -s
       rbenv global 2.0.0-p648
+      rbenv install 2.3.1
   fi
 
 }
@@ -167,7 +168,7 @@ setup_ruby_toolbox() {
 # this install usual ruby tools that i use globally
 setup_python_toolbox() {
 
- info 'installing ruby tools'
+ info 'installing python tools'
 
  if ( type pip > /dev/null )
  then
