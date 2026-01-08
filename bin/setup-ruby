@@ -1,0 +1,27 @@
+#!/bin/sh
+# Install Ruby using rbenv and set as global version
+
+set -e
+
+RUBY_VERSION="3.4.8"
+
+# Check if rbenv is installed
+if ! command -v rbenv >/dev/null 2>&1; then
+    echo "rbenv not installed. Run 'brew-sync' or 'brew install rbenv' first."
+    exit 1
+fi
+
+# Initialize rbenv for this script
+eval "$(rbenv init - --no-rehash)"
+
+echo "Installing Ruby $RUBY_VERSION..."
+rbenv install -s "$RUBY_VERSION"
+
+echo "Setting Ruby $RUBY_VERSION as global version..."
+rbenv global "$RUBY_VERSION"
+
+echo "Installing bundler..."
+gem install bundler
+
+echo "Done! Ruby version:"
+rbenv version
