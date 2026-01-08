@@ -25,6 +25,10 @@ brew 'nmap'
 # python management
 brew 'pyenv'
 brew 'uv'
+# ruby management
+brew 'rbenv'
+# psql
+brew 'postgresql'
 
 cask 'google-chrome'
 cask 'google-drive'
