@@ -1,0 +1,21 @@
+#!/bin/sh
+# Install Python using pyenv and set as global version
+
+set -e
+
+PYTHON_VERSION="3.14.1"
+
+# Check if pyenv is installed
+if ! command -v pyenv >/dev/null 2>&1; then
+    echo "pyenv not installed. Run 'brew-sync' or 'brew install pyenv' first."
+    exit 1
+fi
+
+echo "Installing Python $PYTHON_VERSION..."
+pyenv install -s "$PYTHON_VERSION"
+
+echo "Setting Python $PYTHON_VERSION as global version..."
+pyenv global "$PYTHON_VERSION"
+
+echo "Done! Python version:"
+pyenv version
