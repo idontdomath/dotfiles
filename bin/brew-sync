@@ -1,0 +1,33 @@
+#!/bin/sh
+# Install and upgrade all Homebrew packages from Brewfile
+
+set -e
+
+DOTFILES_DIR="${DOTFILES_DIR:-$HOME/code/dotfiles}"
+BREWFILE="$DOTFILES_DIR/Brewfile"
+
+# Check if Homebrew is installed
+if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew not installed. Install it from https://brew.sh"
+    exit 1
+fi
+
+# Check if Brewfile exists
+if [ ! -f "$BREWFILE" ]; then
+    echo "Brewfile not found at $BREWFILE"
+    exit 1
+fi
+
+echo "Updating Homebrew..."
+brew update
+
+echo "Installing/upgrading packages from Brewfile..."
+brew bundle --file="$BREWFILE"
+
+echo "Upgrading all installed packages..."
+brew upgrade
+
+echo "Cleaning up old versions..."
+brew cleanup
+
+echo "Done!"

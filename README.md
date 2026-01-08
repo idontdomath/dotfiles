@@ -1,11 +1,27 @@
-# idontdomath dotfiles
+# Dotfiles
 
-This is my approach to personal dotfiles, highly based on [holman dotfiles](https://github.com/holman/dotfiles) with whom I share the topical approach.
+Personal idontdomath's dotfiles for macOS/Linux. Compatible with bash and zsh.
 
-As i'm using it's base ideas and scripts for symlinking and loading, so if you if you want to go deeper look, take a look at his repo.
+## What's Included
 
-# TODO
+- **Shell aliases** - Common shortcuts for git, navigation, and system tasks
+- **Zsh keybindings** - Alt+Arrow keys for word navigation in terminal
+- **Homebrew packages** - Curated list of CLI tools and applications (macOS)
+- **Utility scripts** - `brew-sync` for package management, `setup-python` for pyenv setup
 
-At initial setup, moving the way from my bash scripts to manage brew/cash, and starting to setup up zsh on my own (outside oh-my-zsh). Also some initial aliases for some actual needs (that will be growing in the future). 
+## Setup
 
-Next up: REAL zsh customization ad prompt, and git configuration/aliases.
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/dotfiles.git ~/code/dotfiles
+   ```
+
+2. Add to your `~/.zshrc` or `~/.bashrc`:
+   ```bash
+   source ~/code/dotfiles/init.sh
+   ```
+
+3. Install Homebrew packages (macOS):
+   ```bash
+   brew-sync
+   ```
