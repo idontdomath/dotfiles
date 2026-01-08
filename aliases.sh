@@ -33,3 +33,10 @@ alias wifi-status='networksetup -getairportpower en0'
 
 # macOS DNS
 alias flush-dns='sudo dscacheutil -flushcache && sudo killall -HUP mDNSResponder && echo "DNS cache flushed"'
+
+# PostgreSQL (Homebrew)
+alias pg-start='brew services start postgresql'
+alias pg-stop='brew services stop postgresql'
+
+# Network
+alias ports='lsof -i -P -n | grep LISTEN'
