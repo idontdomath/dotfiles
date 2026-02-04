@@ -40,3 +40,7 @@ alias pg-stop='brew services stop postgresql'
 
 # Network
 alias ports='lsof -i -P -n | grep LISTEN'
+
+# Google Chrome Canary with remote debug at port 9222
+alias chrome-canary-debug='/Applications/Google\ Chrome\ Canary.app/Contents/MacOS/Google\ Chrome\ Canary --remote-debugging-port=9222 &'
+alias run-playbook-selfhosted='HOME=/Users/ak/code/selfhosted ANSIBLE_CONFIG=/Users/ak/code/selfhosted/ansible.cfg ansible-playbook -i deploy/ansible/inventory/hosts.ini deploy/ansible/site.yml --private-key ~/.ssh/selfhosted_ansible --ask-become-pass'
