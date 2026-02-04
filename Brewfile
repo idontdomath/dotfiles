@@ -2,6 +2,7 @@ cask_args appdir: '/Applications'
 
 tap 'homebrew/bundle'
 tap 'hashicorp/tap'
+tap 'heroku/brew'
 
 #brew 'p7zip'
 #brew 'wget'
@@ -29,8 +30,13 @@ brew 'uv'
 brew 'rbenv'
 # psql
 brew 'postgresql'
+# heroku
+brew 'heroku'
+# ansible
+brew 'ansible'
 
 cask 'google-chrome'
+cask 'google-chrome@canary'
 cask 'google-drive'
 #cask 'firefox'
 #cask 'sublime-text'
@@ -61,5 +67,8 @@ cask 'lm-studio'
 cask 'ollama-app'
 cask 'msty'
 cask 'slack'
-cask 'claude-code'
 cask 'zoom'
+cask 'utm'
+
+cask 'claude-code'
+cask 'codex'
