@@ -69,6 +69,7 @@ cask 'msty'
 cask 'slack'
 cask 'zoom'
 cask 'utm'
+cask 'pritunl'
 
 cask 'claude-code'
 cask 'codex'
