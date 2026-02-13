@@ -3,6 +3,7 @@ cask_args appdir: '/Applications'
 tap 'homebrew/bundle'
 tap 'hashicorp/tap'
 tap 'heroku/brew'
+tap 'gromgit/fuse'
 
 #brew 'p7zip'
 #brew 'wget'
@@ -34,6 +35,8 @@ brew 'postgresql'
 brew 'heroku'
 # ansible
 brew 'ansible'
+# sshfs (requires macfuse)
+brew 'gromgit/fuse/sshfs-mac'
 
 cask 'google-chrome'
 cask 'google-chrome@canary'

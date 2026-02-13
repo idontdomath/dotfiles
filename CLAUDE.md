@@ -31,6 +31,10 @@ Add to `aliases.sh`. Use POSIX-compatible syntax for cross-shell support.
 ### Scripts
 Add executable scripts to `bin/`. Use `#!/bin/sh` shebang for portability across Linux/macOS.
 
+## Selfhosted Lab
+
+A home lab server running at `192.168.86.25` on a secure local network. The project lives at `~/code/selfhosted` and is managed with Ansible. The `run-playbook-selfhosted` alias in `aliases.sh` runs the main playbook against this host.
+
 ## Homebrew Commands
 
 ```bash
