@@ -35,6 +35,8 @@ brew 'postgresql'
 brew 'heroku'
 # ansible
 brew 'ansible'
+# github cli
+brew 'gh'
 # sshfs (requires macfuse)
 brew 'gromgit/fuse/sshfs-mac'
 
@@ -73,6 +75,7 @@ cask 'slack'
 cask 'zoom'
 cask 'utm'
 cask 'pritunl'
+cask 'tailscale'
 
 cask 'claude-code'
 cask 'codex'
