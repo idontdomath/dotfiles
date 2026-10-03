@@ -4,6 +4,7 @@
 - `init.sh` is the entry point that wires aliases, keybindings, PATH, and optional rbenv setup.
 - `aliases.sh` holds cross-shell aliases (bash/zsh).
 - `keybindings.zsh` contains zsh-only keybindings.
+- `vpnnat.zsh` holds zsh-only functions that NAT the UTM VM subnet through the host's Pritunl split tunnels (pf anchor `utm-vpn`).
 - `bin/` contains executable helper scripts (e.g., `brew-sync`, `setup-python`, `setup-ruby`) that are added to PATH.
 - `Brewfile` lists Homebrew packages for macOS. There is no separate tests/ directory.
 
