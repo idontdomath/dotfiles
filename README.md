@@ -48,7 +48,8 @@ account into persistent root. See the Security notes in `CLAUDE.md`.
 Configuration lives at the top of `vpnnat.zsh` and can be overridden in
 `~/.zshrc` after the `source`: `VPNNAT_VM_SUBNETS`, `VPNNAT_EXPECTED_GATEWAYS`,
 `VPNNAT_SCOPE`, `VPNNAT_ALLOWED_NETS`, `VPNNAT_BLOCK_WHEN_DOWN`,
-`VPNNAT_CORP_NETS`, `VPNNAT_VM_SSH`, `VPNNAT_POLL_INTERVAL`. Run `vpnnat help`
+`VPNNAT_CORP_NETS`, `VPNNAT_VM_SSH`, `VPNNAT_POLL_INTERVAL`,
+`VPNNAT_BROAD_PREFIX`. Run `vpnnat help`
 for the short version.
 
 Logs go to `/var/log/vpnnat.log` (`vpnnat log`). See the vpnnat section in

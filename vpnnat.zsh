@@ -100,6 +100,17 @@ _vpnnat_sudo() {
   if (( EUID == 0 )); then "$@"; else sudo "$@"; fi
 }
 
+# chown/chmod/touch/tee siguen symlinks, asi que escribir con root sobre un path
+# que resulte ser un link actuaria sobre el destino. Los directorios que usamos
+# (/etc/pf.anchors, /var/db/vpnnat, /var/log) son root-only, asi que un usuario
+# sin privilegios no puede plantar el link; esto cubre el caso de que alguien
+# sobreescriba VPNNAT_LOG o VPNNAT_STATE_DIR hacia un lugar escribible.
+_vpnnat_refuse_symlink() {
+  [[ -L $1 ]] || return 0
+  _vpnnat_warn "$1 es un symlink; me niego a escribir ahi con privilegios"
+  return 1
+}
+
 # 0xffffff00 -> 24
 _vpnnat_mask_to_prefix() {
   local x=$(( $1 )) n=0 i
@@ -291,7 +302,9 @@ _vpnnat_save_corp_cache() {
   for t in $tuns; do nets+=(${(f)"$(_vpnnat_tunnel_nets $t)"}); done
   (( ${#nets} )) || return 0
   _vpnnat_sudo mkdir -p "$VPNNAT_STATE_DIR" 2>/dev/null
-  print -rl -- ${(u)nets} | _vpnnat_sudo tee "$(_vpnnat_corp_cache_file)" >/dev/null
+  local cf; cf=$(_vpnnat_corp_cache_file)
+  _vpnnat_refuse_symlink "$cf" || return 1
+  print -rl -- ${(u)nets} | _vpnnat_sudo tee "$cf" >/dev/null
 }
 
 _vpnnat_corp_nets() {
@@ -370,6 +383,7 @@ _vpnnat_desired_nat_ifaces() {
 # Escribe un anchor si cambio. Devuelve 0 si escribio, 1 si ya estaba igual.
 _vpnnat_write_if_changed() {
   local file=$1 content=$2
+  _vpnnat_refuse_symlink "$file" || return 2
   if [[ -r $file ]] && [[ "$(cat "$file")" == "$content" ]]; then return 1; fi
   print -r -- "$content" | _vpnnat_sudo tee "$file" >/dev/null || return 2
   return 0
@@ -401,7 +415,9 @@ _vpnnat_pf_enable() {
   token=$(print -r -- "$out" | awk '/Token/ { print $NF }')
   if [[ -n $token ]]; then
     _vpnnat_sudo mkdir -p "$VPNNAT_STATE_DIR" 2>/dev/null
-    print -r -- "$token" | _vpnnat_sudo tee "$VPNNAT_STATE_DIR/pf-token" >/dev/null
+    if _vpnnat_refuse_symlink "$VPNNAT_STATE_DIR/pf-token"; then
+      print -r -- "$token" | _vpnnat_sudo tee "$VPNNAT_STATE_DIR/pf-token" >/dev/null
+    fi
     _vpnnat_log "pf habilitado (token $token)"
   fi
   _vpnnat_pf_enabled
@@ -410,13 +426,20 @@ _vpnnat_pf_enable() {
 # El log registra acciones privilegiadas, asi que no deberia ser reescribible
 # por el usuario que las invoca. Idempotente y barato: solo actua si hace falta.
 _vpnnat_harden_log() {
+  _vpnnat_refuse_symlink "$VPNNAT_LOG" || return 1
   if [[ ! -e $VPNNAT_LOG ]]; then
-    _vpnnat_sudo touch "$VPNNAT_LOG" 2>/dev/null || return 0
+    if ! _vpnnat_sudo touch "$VPNNAT_LOG" 2>/dev/null; then
+      _vpnnat_warn "no pude crear $VPNNAT_LOG: las acciones privilegiadas no quedan registradas"
+      return 1
+    fi
   elif [[ $(stat -f '%u %Lp' "$VPNNAT_LOG" 2>/dev/null) == "0 640" ]]; then
     return 0
   fi
-  _vpnnat_sudo chown root:wheel "$VPNNAT_LOG" 2>/dev/null
-  _vpnnat_sudo chmod 640 "$VPNNAT_LOG" 2>/dev/null
+  if ! _vpnnat_sudo chown root:wheel "$VPNNAT_LOG" 2>/dev/null \
+  || ! _vpnnat_sudo chmod 640 "$VPNNAT_LOG" 2>/dev/null; then
+    _vpnnat_warn "no pude endurecer $VPNNAT_LOG a root:wheel 0640"
+    return 1
+  fi
 }
 
 _vpnnat_forwarding_enable() {
@@ -843,6 +866,23 @@ _vpnnat_cmd_doctor() {
     _vpnnat_info "'vpnnat watch' corriendo en una terminal."
   fi
 
+  print -r -- "== 11. Integridad del log =="
+  if [[ ! -e $VPNNAT_LOG ]]; then
+    _vpnnat_info "$VPNNAT_LOG todavia no existe (se crea en el primer cambio aplicado)"
+  elif [[ -L $VPNNAT_LOG ]]; then
+    _vpnnat_bad "$VPNNAT_LOG es un symlink: no se escribe ahi con privilegios"
+    fixes+=("revisar $VPNNAT_LOG: es un symlink")
+  else
+    local logperm; logperm=$(stat -f '%u %Lp' "$VPNNAT_LOG" 2>/dev/null)
+    if [[ $logperm == "0 640" ]]; then
+      _vpnnat_ok "$VPNNAT_LOG es root:wheel 0640"
+    else
+      _vpnnat_bad "$VPNNAT_LOG es uid/modo '$logperm', no '0 640':"
+      _vpnnat_info "el registro de acciones privilegiadas es reescribible por su dueño"
+      fixes+=("vpnnat up (endurece el log)")
+    fi
+  fi
+
   print
   if (( ${#fixes} )); then
     print -r -- "${#fixes} problema(s). Arreglos sugeridos:"
@@ -903,12 +943,23 @@ _vpnnat_cmd_reconcile() {
 
 _vpnnat_watch_pidfile() { print -r -- "$VPNNAT_STATE_DIR/watch.pid" }
 
+# El pidfile vive en /var/db y sobrevive reinicios y kill -9, asi que `kill -0`
+# por si solo no alcanza: tras un reboot el PID anotado puede estar reciclado
+# por un proceso cualquiera y daria un falso positivo justo cuando el usuario
+# mas necesita saber que NO hay nada reconciliando.
 _vpnnat_watch_running() {
-  local f pid
+  local f pid boot mtime
   f=$(_vpnnat_watch_pidfile)
   [[ -r $f ]] || return 1
   pid=$(cat "$f" 2>/dev/null)
-  [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null
+  [[ $pid == <-> ]] || return 1
+  # Un pidfile anterior al ultimo arranque es basura por definicion.
+  boot=$(sysctl -n kern.boottime 2>/dev/null | sed -n 's/.*sec = \([0-9]*\),.*/\1/p')
+  mtime=$(stat -f %m "$f" 2>/dev/null)
+  if [[ -n $boot && -n $mtime ]] && (( mtime < boot )); then return 1; fi
+  kill -0 "$pid" 2>/dev/null || return 1
+  # Y que el proceso sea un zsh, no un PID reciclado por otra cosa.
+  [[ $(ps -p "$pid" -o comm= 2>/dev/null) == *zsh* ]]
 }
 
 _vpnnat_cmd_watch() {
@@ -919,14 +970,30 @@ _vpnnat_cmd_watch() {
   fi
   _vpnnat_sudo mkdir -p "$VPNNAT_STATE_DIR"
   local f; f=$(_vpnnat_watch_pidfile)
+  _vpnnat_refuse_symlink "$f" || return 1
   print -r -- $$ | _vpnnat_sudo tee "$f" >/dev/null
-  trap "_vpnnat_sudo rm -f ${(q)f}" EXIT INT TERM
+
+  # local_traps: `trap` dentro de una funcion es GLOBAL en zsh por defecto, asi
+  # que sin esto el handler quedaria registrado en el shell interactivo del
+  # usuario y correria en cada Ctrl-C posterior, incluso al cerrar la terminal.
+  setopt local_options local_traps
+
+  # Un trap INT/TERM solo corre el handler: NO termina el loop. Con el handler
+  # anterior, Ctrl-C borraba el pidfile y dejaba el reconciliador corriendo
+  # huerfano e invisible para doctor. De ahi el flag.
+  local stop=0
+  trap 'stop=1' INT TERM
+  trap "_vpnnat_sudo rm -f ${(q)f}" EXIT
+
   _vpnnat_say "vigilando cada ${VPNNAT_POLL_INTERVAL}s (Ctrl-C para salir); log en $VPNNAT_LOG"
   _vpnnat_log "watch: iniciado (pid $$)"
-  while :; do
+  while (( ! stop )); do
     _vpnnat_cmd_reconcile
+    (( stop )) && break
     sleep "$VPNNAT_POLL_INTERVAL"
   done
+  _vpnnat_say "watch detenido"
+  _vpnnat_log "watch: detenido (pid $$)"
 }
 
 _vpnnat_cmd_help() {

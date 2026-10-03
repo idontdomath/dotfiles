@@ -82,6 +82,13 @@ Key invariants, learned the hard way:
   completely while the anchor stayed correct.
 - A rule pointing at a nonexistent utun loads without any error and is silently
   inert. That is why `doctor` exists.
+- **Two zsh trap gotchas, both hit in `watch`.** A `trap ... INT` only runs the
+  handler; it does *not* terminate the enclosing loop. The first version
+  deleted the pidfile on Ctrl-C and left the reconcile loop running, orphaned
+  and invisible to `doctor`. The loop now exits via a flag the handler sets.
+  And `trap` inside a function is *global* in zsh unless `LOCAL_TRAPS` is set,
+  so the handler leaked into the caller's interactive shell and re-ran on every
+  later Ctrl-C; `watch` now sets `local_options local_traps`.
 
 ### Configuration
 
@@ -108,7 +115,7 @@ All knobs live at the top of `vpnnat.zsh` and can be overridden in `~/.zshrc`
 | `/etc/pf.conf.vpnnat-backup-*` | Backup taken by `setup` before touching `pf.conf`. |
 | `/var/db/vpnnat/corp-nets` | Cached tunnel subnets, so `down` knows what to block once the routes are gone. |
 | `/var/db/vpnnat/pf-token` | `pfctl -E` reference token, when vpnnat is the one that enabled pf. |
-| `/var/db/vpnnat/watch.pid` | PID of a running `watch`, so `doctor` can report it. Removed on exit. |
+| `/var/db/vpnnat/watch.pid` | PID of a running `watch`, so `doctor` can report it. Removed on exit. A bare PID is not trusted on its own: the file survives reboots and `kill -9`, so it is rejected when its mtime predates `kern.boottime` or when the PID is not a live zsh. |
 | `/var/log/vpnnat.log` | One line per applied change, `root:wheel 0640`. `vpnnat log [n]` reads it with sudo. |
 
 ### Security
@@ -124,7 +131,15 @@ All knobs live at the top of `vpnnat.zsh` and can be overridden in `~/.zshrc`
   the script to a root-owned path (e.g. `/Library/PrivilegedHelperTools/`) at
   install time and point the plist there, so root never trusts `$HOME`.
 - The log is `root:wheel 0640` so the record of privileged actions is not
-  rewritable by the user who invoked them.
+  rewritable by the user who invoked them. Hardening is idempotent, runs from
+  both `setup` and `up`, warns when it fails instead of failing silently, and
+  `doctor` section 11 audits the result — a control nobody checks is not a
+  control.
+- `chown`/`chmod`/`touch`/`tee` follow symlinks, so every privileged write
+  refuses a path that is a symlink. The directories involved (`/etc/pf.anchors`,
+  `/var/db/vpnnat`, `/var/log`) are root-owned, so an unprivileged user cannot
+  plant the link; the guard covers `VPNNAT_LOG` or `VPNNAT_STATE_DIR` being
+  pointed somewhere writable.
 - Interface names interpolated into generated pf rules are constrained to
   `^utun[0-9]+$`, `^bridge[0-9]+$` and `^en[0-9]+$`, and gateways used in
   probes are validated as dotted quads, so neither a process inside the VM nor
