@@ -49,7 +49,7 @@ vpnnat setup            # once: register the anchors in /etc/pf.conf
 vpnnat up               # reconcile the anchor with the active tunnels
 vpnnat status           # loaded rules vs rules that should be loaded
 vpnnat doctor           # diagnose the known failure modes
-vpnnat install-daemon   # LaunchDaemon that reconciles automatically
+vpnnat watch            # reconcile in a loop, in the foreground
 ```
 
 Key invariants, learned the hard way:
@@ -67,7 +67,19 @@ Key invariants, learned the hard way:
 - Nothing survives a reboot: `com.apple.pfctl.plist` runs `pfctl -f /etc/pf.conf`
   at boot but without `-e`, so pf ends up disabled and the anchor is loaded from
   disk with whatever utun was last written. `net.inet.ip.forwarding` resets to 0.
-  The LaunchDaemon's `RunAtLoad` is what covers this.
+  Nothing reapplies this automatically by design (see Security below): run
+  `vpnnat up` after a reboot or a reconnect, or leave `vpnnat watch` running.
+- **`net.inet.ip.forwarding` is host-wide.** There is no way to scope it to the
+  vmnet bridge. `up` turns it on and nothing turns it back off, so a roaming
+  laptop keeps IP forwarding enabled beyond the window where the VM actually
+  needs it. The exposure is bounded by the NAT rules being scoped
+  `from <vm subnet>`, so this is not an open relay, but it is worth knowing.
+- **Only the *set* of tunnel interface names matters, not which profile is on
+  which.** Rules are `nat on utunN ... -> (utunN)`, self-referential and
+  interface-scoped, so a reconnect that reshuffles which profile owns which
+  utun number needs no change as long as the same names are still tunnels.
+  Observed in practice: over two days the three profiles rotated utun numbers
+  completely while the anchor stayed correct.
 - A rule pointing at a nonexistent utun loads without any error and is silently
   inert. That is why `doctor` exists.
 
@@ -84,7 +96,8 @@ All knobs live at the top of `vpnnat.zsh` and can be overridden in `~/.zshrc`
 | `VPNNAT_BLOCK_WHEN_DOWN` | `0` | With no tunnel up, `block return` the corporate subnets instead of leaking the attempts to the ISP. Needs the `utm-vpn-block` filter anchor (pf rejects `block` inside a `nat-anchor`), which `setup` registers empty and inert. |
 | `VPNNAT_CORP_NETS` | cache | Subnets to block. Empty = the union of tunnel routes cached on the last `up`. |
 | `VPNNAT_VM_SSH` | empty | e.g. `user@192.168.64.2`. Enables `doctor`'s "from inside the VM" connectivity probe. |
-| `VPNNAT_POLL_INTERVAL` | `30` | `watch` loop and the daemon's `StartInterval`. |
+| `VPNNAT_POLL_INTERVAL` | `30` | Seconds between `watch` iterations. |
+| `VPNNAT_BROAD_PREFIX` | `7` | `status`/`doctor` warn when a tunnel advertises a prefix this broad or broader, or an explicit default. Guards against a profile silently sending all VM traffic over the VPN while `VPNNAT_SCOPE=any`. `10.0.0.0/8` is a legitimate corporate route, hence 7 rather than 8. |
 
 ### Files
 
@@ -95,21 +108,42 @@ All knobs live at the top of `vpnnat.zsh` and can be overridden in `~/.zshrc`
 | `/etc/pf.conf.vpnnat-backup-*` | Backup taken by `setup` before touching `pf.conf`. |
 | `/var/db/vpnnat/corp-nets` | Cached tunnel subnets, so `down` knows what to block once the routes are gone. |
 | `/var/db/vpnnat/pf-token` | `pfctl -E` reference token, when vpnnat is the one that enabled pf. |
-| `/var/log/vpnnat.log` | One line per applied change. `vpnnat log [n]` tails it. |
+| `/var/db/vpnnat/watch.pid` | PID of a running `watch`, so `doctor` can report it. Removed on exit. |
+| `/var/log/vpnnat.log` | One line per applied change, `root:wheel 0640`. `vpnnat log [n]` reads it with sudo. |
+
+### Security
+
+- **There is deliberately no LaunchDaemon.** An earlier version installed one
+  that ran as root and re-sourced `vpnnat.zsh` from the git checkout in `$HOME`
+  every 30 seconds. Since that path is user-writable, anything that achieved
+  code execution as the user — or any commit that landed in the repo and got
+  pulled — would have gained unattended, passwordless, persistent root. That
+  turns "the user account is compromised" into "root is compromised", a much
+  larger blast radius than this tool needs. `watch` runs in the foreground
+  under the operator's own control instead. If a daemon is ever wanted, copy
+  the script to a root-owned path (e.g. `/Library/PrivilegedHelperTools/`) at
+  install time and point the plist there, so root never trusts `$HOME`.
+- The log is `root:wheel 0640` so the record of privileged actions is not
+  rewritable by the user who invoked them.
+- Interface names interpolated into generated pf rules are constrained to
+  `^utun[0-9]+$`, `^bridge[0-9]+$` and `^en[0-9]+$`, and gateways used in
+  probes are validated as dotted quads, so neither a process inside the VM nor
+  a hostile VPN/DHCP server can smuggle pf syntax into the anchor.
 
 ### Open items
 
 - **Datapath confirmed on two of the three tunnels.** After testing from inside
-  the VM, `pfctl -a utm-vpn -s nat -v` showed `utun7` translating 1984 packets /
-  1.67 MB and `utun8` 52 packets / 34 KB. Packets counted on a `nat on utunN`
-  rule are direct proof that VM traffic left through that tunnel with the
-  tunnel's address as source, rather than leaking out `en0`. `utun6` still reads
-  `Packets: 0`; most likely nothing was addressed to its ranges (`10.100/16`,
-  `10.0.13/24`, `10.60/20`, `10.140/14`, `192.168.20/24`, the `192.168.100.x`
-  /32s) rather than a fault, since its rule is identical to the other two. To
-  close it, ping `10.250.40.1` or `192.168.100.4` from the VM and re-read the
-  counters. `pfctl -a utm-vpn -s nat -v` is the tool for this question in
-  general: per-rule packet counts tell you which tunnel actually carried traffic.
+  the VM, `pfctl -a utm-vpn -s nat -v` showed two of the three tunnel rules
+  translating real traffic (1984 packets / 1.67 MB and 52 packets / 34 KB).
+  Packets counted on a `nat on utunN` rule are direct proof that VM traffic left
+  through that tunnel with the tunnel's address as source rather than leaking out
+  `en0`. The third — the profile whose gateway is `10.250.40.1` — still read
+  `Packets: 0`, most likely because nothing was addressed to its ranges rather
+  than a fault, since its rule is identical to the other two. Identify profiles
+  by **gateway**, not by utun number: the numbers rotate on reconnect, and these
+  three swapped places entirely within two days. To close it, ping that profile's
+  gateway from the VM and re-read the counters. `pfctl -a utm-vpn -s nat -v` is
+  the right tool for this question in general.
 - **Internal DNS.** The VM resolves against vmnet's resolver and does not resolve
   corporate names. `scutil --dns` shows resolver #1 as `192.168.100.4`,
   `192.168.100.21`, `192.168.100.44` with search domain `lan`, and all three are

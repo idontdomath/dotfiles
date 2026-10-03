@@ -9,7 +9,6 @@
 #   vpnnat status           estado actual vs estado deseado
 #   vpnnat doctor           diagnostico de la matriz de fallas conocidas
 #   vpnnat watch            reconcilia en loop ante cambios de red
-#   vpnnat install-daemon   instala un LaunchDaemon que hace lo mismo
 #
 # Ver `vpnnat help` para la lista completa.
 
@@ -45,8 +44,15 @@ typeset -ga VPNNAT_CORP_NETS=()
 typeset -g VPNNAT_VM_HOST=192.168.64.2
 typeset -g VPNNAT_VM_SSH=""
 
-# Intervalo de polling de `watch` y del LaunchDaemon (segundos)
+# Intervalo de polling de `watch` (segundos)
 typeset -g VPNNAT_POLL_INTERVAL=30
+
+# Prefijo a partir del cual una ruta anunciada por un tunel se considera
+# sospechosamente amplia. Con VPNNAT_SCOPE=any la regla es `to any` y el
+# alcance real lo decide la tabla de rutas del host: si un perfil empuja una
+# default (o un /1-/7), TODO el trafico de la VM pasaria por esa VPN. 10/8 es
+# una ruta corporativa legitima y comun, de ahi que el umbral sea 7 y no 8.
+typeset -g VPNNAT_BROAD_PREFIX=7
 
 # Rutas
 typeset -g VPNNAT_ANCHOR=utm-vpn
@@ -56,21 +62,21 @@ typeset -g VPNNAT_BLOCK_FILE=/etc/pf.anchors/utm-vpn-block
 typeset -g VPNNAT_PF_CONF=/etc/pf.conf
 typeset -g VPNNAT_STATE_DIR=/var/db/vpnnat
 typeset -g VPNNAT_LOG=/var/log/vpnnat.log
-typeset -g VPNNAT_DAEMON_LABEL=com.ak.vpnnat
-typeset -g VPNNAT_DAEMON_PLIST=/Library/LaunchDaemons/com.ak.vpnnat.plist
 
 # ---------------------------------------------------------------------------
 # Utilidades
 # ---------------------------------------------------------------------------
 
-_vpnnat_self() {
-  # Ruta de este archivo, para que el LaunchDaemon lo pueda sourcear
-  print -r -- "${VPNNAT_SOURCE:-${${(%):-%x}:A}}"
-}
-
+# El log es root:wheel 0640 a proposito: registra lo que se hizo con
+# privilegios, asi que el usuario que invoca no deberia poder reescribirlo.
+# `vpnnat log` lo lee con sudo.
 _vpnnat_log() {
   local line="$(date '+%Y-%m-%dT%H:%M:%S%z') [$$] $*"
-  print -r -- "$line" >> "$VPNNAT_LOG" 2>/dev/null
+  if (( EUID == 0 )); then
+    print -r -- "$line" >> "$VPNNAT_LOG" 2>/dev/null
+  else
+    print -r -- "$line" | _vpnnat_sudo tee -a "$VPNNAT_LOG" >/dev/null 2>&1
+  fi
 }
 
 _vpnnat_say()  { print -r -- "$*" }
@@ -184,6 +190,17 @@ _vpnnat_tunnels() {
       [[ -n $gw ]] && (( ${VPNNAT_EXPECTED_GATEWAYS[(Ie)$gw]} )) || continue
     fi
     print -r -- $i
+  done
+}
+
+# Rutas anunciadas por un tunel que son lo bastante amplias como para cambiar
+# el sentido de la regla `to any`: una default explicita, o un prefijo <= umbral.
+_vpnnat_broad_routes() {
+  local t=$1 d pre
+  netstat -rn -f inet 2>/dev/null | awk -v i=$t '$1 == "default" && $4 == i { print "0.0.0.0/0" }'
+  for d in ${(f)"$(_vpnnat_tunnel_nets $t)"}; do
+    pre=${d##*/}
+    (( pre <= VPNNAT_BROAD_PREFIX )) && print -r -- "$d"
   done
 }
 
@@ -390,6 +407,18 @@ _vpnnat_pf_enable() {
   _vpnnat_pf_enabled
 }
 
+# El log registra acciones privilegiadas, asi que no deberia ser reescribible
+# por el usuario que las invoca. Idempotente y barato: solo actua si hace falta.
+_vpnnat_harden_log() {
+  if [[ ! -e $VPNNAT_LOG ]]; then
+    _vpnnat_sudo touch "$VPNNAT_LOG" 2>/dev/null || return 0
+  elif [[ $(stat -f '%u %Lp' "$VPNNAT_LOG" 2>/dev/null) == "0 640" ]]; then
+    return 0
+  fi
+  _vpnnat_sudo chown root:wheel "$VPNNAT_LOG" 2>/dev/null
+  _vpnnat_sudo chmod 640 "$VPNNAT_LOG" 2>/dev/null
+}
+
 _vpnnat_forwarding_enable() {
   _vpnnat_forwarding_on && return 0
   _vpnnat_sudo sysctl -w net.inet.ip.forwarding=1 >/dev/null && _vpnnat_log "forwarding habilitado"
@@ -419,8 +448,7 @@ _vpnnat_cmd_setup() {
   [[ -r $VPNNAT_PF_CONF ]] || { _vpnnat_die "no existe $VPNNAT_PF_CONF"; return 1 }
 
   _vpnnat_sudo mkdir -p "$VPNNAT_STATE_DIR"
-  _vpnnat_sudo touch "$VPNNAT_LOG" && _vpnnat_sudo chmod 644 "$VPNNAT_LOG"
-  [[ $(stat -f %u "$VPNNAT_LOG") == 0 && $EUID != 0 ]] && _vpnnat_sudo chown "$(id -u)" "$VPNNAT_LOG"
+  _vpnnat_harden_log
 
   # Los archivos de anchor tienen que existir antes de que pfctl lea pf.conf.
   # Se escribe ya el contenido definitivo (con los tuneles actuales) para que
@@ -470,6 +498,18 @@ _vpnnat_cmd_setup() {
           }
         }
       }' "$VPNNAT_PF_CONF" > "$tmp" || { rm -f "$tmp"; return 1 }
+
+    # El awk ancla la insercion en la ultima linea nat-anchor/rdr-anchor y en
+    # la ultima linea `anchor`. Si un pf.conf no tuviera ninguna, el reescrito
+    # saldria identico al original y el fallo recien se notaria en el `up`
+    # siguiente. Chequear el resultado para fallar aca, ruidosamente.
+    if ! grep -qE "^[[:space:]]*nat-anchor[[:space:]]+\"$VPNNAT_ANCHOR\"" "$tmp" \
+    || ! grep -qE "^[[:space:]]*anchor[[:space:]]+\"$VPNNAT_BLOCK_ANCHOR\"" "$tmp"; then
+      _vpnnat_warn "no encontre donde anclar los anchors en $VPNNAT_PF_CONF:"
+      _vpnnat_warn "no tiene ninguna linea nat-anchor/rdr-anchor ni anchor."
+      _vpnnat_warn "candidato en $tmp; no toco $VPNNAT_PF_CONF"
+      return 1
+    fi
 
     # Validar ANTES de instalar: si el orden quedo mal, pfctl -n lo dice
     _vpnnat_sudo pfctl -n -f "$tmp" 2>&1 | _vpnnat_pfctl_noise >&2
@@ -540,6 +580,7 @@ _vpnnat_cmd_up() {
   if (( ${#tuns} )) && [[ $want != $have ]]; then nat_changed=1; fi
   if (( ! ${#tuns} )) && [[ -n $(_vpnnat_loaded_nat | grep -E 'on utun') ]]; then nat_changed=1; fi
 
+  _vpnnat_harden_log
   _vpnnat_forwarding_enable
   _vpnnat_pf_enable || _vpnnat_warn "no pude habilitar pf"
 
@@ -591,9 +632,12 @@ _vpnnat_cmd_status() {
   if (( ! ${#tuns} )); then
     _vpnnat_info "ninguno (ningun utun con IPv4)"
   else
-    local t
+    local t broad
     for t in $tuns; do
       _vpnnat_info "$t  ip=$(ifconfig $t | awk '$1=="inet"{print $2; exit}')  gw=${$(_vpnnat_tunnel_gw $t):--}  rutas=$(_vpnnat_tunnel_nets $t | wc -l | tr -d ' ')"
+      broad=$(_vpnnat_broad_routes $t | paste -sd, -)
+      [[ -n $broad && $VPNNAT_SCOPE == any ]] && \
+        _vpnnat_bad "  $t anuncia $broad con scope=any: todo el trafico de la VM hacia ahi sale por este tunel"
     done
   fi
   print
@@ -759,26 +803,44 @@ _vpnnat_cmd_doctor() {
     [[ -n $VPNNAT_VM_SSH ]] || _vpnnat_info "define VPNNAT_VM_SSH=usuario@$VPNNAT_VM_HOST para probar desde la VM"
   fi
 
-  print -r -- "== 9. Persistencia y automatizacion =="
+  print -r -- "== 9. Alcance de las reglas de tunel =="
+  # Con VPNNAT_SCOPE=any la regla es `to any` y es segura solo porque un perfil
+  # split-tunnel rutea unicamente lo corporativo por el tunel. Si un perfil
+  # empuja una default, TODO el trafico de la VM pasaria por esa VPN, NATeado
+  # como si naciera ahi, sin que nada avise.
+  if [[ $VPNNAT_SCOPE == any ]] && (( ${#tuns} )); then
+    local t broad
+    local found=0
+    for t in $tuns; do
+      broad=$(_vpnnat_broad_routes $t | paste -sd, -)
+      [[ -n $broad ]] || continue
+      found=1
+      _vpnnat_bad "$t anuncia $broad y VPNNAT_SCOPE=any ('to any')"
+      _vpnnat_info "todo el trafico de la VM hacia ese rango sale por ese tunel."
+      _vpnnat_info "si no es lo que querés, poné VPNNAT_SCOPE=routes para acotar"
+      _vpnnat_info "el NAT a las subredes que el tunel realmente anuncia."
+      fixes+=("revisar VPNNAT_SCOPE: $t anuncia $broad")
+    done
+    (( found )) || _vpnnat_ok "ningun tunel anuncia rutas mas amplias que /$VPNNAT_BROAD_PREFIX"
+  elif [[ $VPNNAT_SCOPE != any ]]; then
+    _vpnnat_ok "VPNNAT_SCOPE=$VPNNAT_SCOPE: el NAT esta acotado por tabla"
+  fi
+
+  print -r -- "== 10. Persistencia =="
   # Verificado: /System/Library/LaunchDaemons/com.apple.pfctl.plist corre
   # `pfctl -f /etc/pf.conf` con RunAtLoad pero SIN -e. En el arranque entonces
   # el anchor se carga desde disco (con el utun que quedo escrito, casi siempre
   # obsoleto) y pf queda deshabilitado. El forwarding tampoco persiste.
   local file_tuns
   file_tuns=$(grep -oE 'on utun[0-9]+' "$VPNNAT_ANCHOR_FILE" 2>/dev/null | awk '{print $2}' | sort -u)
-  if [[ -f $VPNNAT_DAEMON_PLIST ]]; then
-    if _vpnnat_sudo launchctl print "system/$VPNNAT_DAEMON_LABEL" >/dev/null 2>&1; then
-      _vpnnat_ok "LaunchDaemon $VPNNAT_DAEMON_LABEL cargado (RunAtLoad cubre el reinicio)"
-    else
-      _vpnnat_bad "el plist esta instalado pero el daemon no esta cargado"
-      fixes+=("vpnnat install-daemon")
-    fi
+  if _vpnnat_watch_running; then
+    _vpnnat_ok "hay un watch corriendo (pid $(cat "$(_vpnnat_watch_pidfile)")): reconcilia solo"
   else
-    _vpnnat_bad "sin LaunchDaemon: nada reaplica el estado tras un reinicio ni ante"
-    _vpnnat_info "una reconexion silenciosa del VPN. En el arranque pf queda"
+    _vpnnat_info "nada reaplica el estado automaticamente. Tras un reinicio pf queda"
     _vpnnat_info "deshabilitado, el forwarding en 0 y el anchor se carga desde disco"
     _vpnnat_info "con ${${(j:,:)${(f)file_tuns}}:-ningun utun}, que puede ya no existir."
-    fixes+=("vpnnat install-daemon")
+    _vpnnat_info "Corré 'vpnnat up' tras un reinicio o una reconexion, o dejá"
+    _vpnnat_info "'vpnnat watch' corriendo en una terminal."
   fi
 
   print
@@ -801,7 +863,7 @@ _vpnnat_doctor_probes() {
 }
 
 # Reconciliacion silenciosa: calcula el deseado, compara con el cargado,
-# aplica solo si difiere. Es lo que corre el daemon.
+# aplica solo si difiere. Es lo que corre `watch` en cada vuelta.
 _vpnnat_cmd_reconcile() {
   _vpnnat_need_root "reconciliar las reglas" || return 1
   local -a tuns; tuns=(${(f)"$(_vpnnat_tunnels)"})
@@ -839,64 +901,32 @@ _vpnnat_cmd_reconcile() {
   fi
 }
 
+_vpnnat_watch_pidfile() { print -r -- "$VPNNAT_STATE_DIR/watch.pid" }
+
+_vpnnat_watch_running() {
+  local f pid
+  f=$(_vpnnat_watch_pidfile)
+  [[ -r $f ]] || return 1
+  pid=$(cat "$f" 2>/dev/null)
+  [[ -n $pid ]] && kill -0 "$pid" 2>/dev/null
+}
+
 _vpnnat_cmd_watch() {
   _vpnnat_need_root "reconciliar en loop" || return 1
+  if _vpnnat_watch_running; then
+    _vpnnat_warn "ya hay un watch corriendo (pid $(cat "$(_vpnnat_watch_pidfile)"))"
+    return 1
+  fi
+  _vpnnat_sudo mkdir -p "$VPNNAT_STATE_DIR"
+  local f; f=$(_vpnnat_watch_pidfile)
+  print -r -- $$ | _vpnnat_sudo tee "$f" >/dev/null
+  trap "_vpnnat_sudo rm -f ${(q)f}" EXIT INT TERM
   _vpnnat_say "vigilando cada ${VPNNAT_POLL_INTERVAL}s (Ctrl-C para salir); log en $VPNNAT_LOG"
   _vpnnat_log "watch: iniciado (pid $$)"
   while :; do
     _vpnnat_cmd_reconcile
     sleep "$VPNNAT_POLL_INTERVAL"
   done
-}
-
-_vpnnat_cmd_install_daemon() {
-  _vpnnat_need_root "instalar el LaunchDaemon" || return 1
-  local self; self=$(_vpnnat_self)
-  [[ -r $self ]] || { _vpnnat_die "no encuentro este archivo ($self); exporta VPNNAT_SOURCE"; return 1 }
-
-  local tmp; tmp=$(mktemp -t vpnnat-plist) || return 1
-  cat > "$tmp" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>$VPNNAT_DAEMON_LABEL</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-c</string>
-    <string>VPNNAT_SOURCE=$self source $self &amp;&amp; vpnnat reconcile</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>StartInterval</key><integer>$VPNNAT_POLL_INTERVAL</integer>
-  <key>WatchPaths</key>
-  <array>
-    <string>/etc/resolv.conf</string>
-    <string>/var/run/resolv.conf</string>
-    <string>/Library/Preferences/SystemConfiguration</string>
-  </array>
-  <key>StandardErrorPath</key><string>$VPNNAT_LOG</string>
-  <key>ProcessType</key><string>Background</string>
-</dict>
-</plist>
-PLIST
-
-  _vpnnat_sudo cp "$tmp" "$VPNNAT_DAEMON_PLIST" && rm -f "$tmp"
-  _vpnnat_sudo chown root:wheel "$VPNNAT_DAEMON_PLIST"
-  _vpnnat_sudo chmod 644 "$VPNNAT_DAEMON_PLIST"
-  _vpnnat_sudo launchctl bootout "system/$VPNNAT_DAEMON_LABEL" 2>/dev/null
-  _vpnnat_sudo launchctl bootstrap system "$VPNNAT_DAEMON_PLIST" || { _vpnnat_die "launchctl bootstrap fallo"; return 1 }
-  _vpnnat_log "daemon instalado ($self)"
-  _vpnnat_say "daemon $VPNNAT_DAEMON_LABEL instalado."
-  _vpnnat_say "RunAtLoad cubre el reinicio; WatchPaths los cambios de red; StartInterval=${VPNNAT_POLL_INTERVAL}s es el respaldo."
-}
-
-_vpnnat_cmd_uninstall_daemon() {
-  _vpnnat_need_root "desinstalar el LaunchDaemon" || return 1
-  _vpnnat_sudo launchctl bootout "system/$VPNNAT_DAEMON_LABEL" 2>/dev/null
-  _vpnnat_sudo rm -f "$VPNNAT_DAEMON_PLIST"
-  _vpnnat_log "daemon desinstalado"
-  _vpnnat_say "daemon $VPNNAT_DAEMON_LABEL desinstalado"
 }
 
 _vpnnat_cmd_help() {
@@ -911,21 +941,29 @@ vpnnat - NAT de la subred de VMs de UTM hacia los tuneles split-tunnel de Pritun
   down               quita las reglas de tunel, deja la de la fisica
   status             entorno, tuneles, reglas cargadas vs deseadas, pf, forwarding
   doctor             recorre la matriz de fallas conocidas y dice que esta mal
-  reconcile          como up pero silencioso e idempotente (lo usa el daemon)
-  watch              reconcile en loop cada VPNNAT_POLL_INTERVAL segundos
-  install-daemon     LaunchDaemon: RunAtLoad + WatchPaths + StartInterval
-  uninstall-daemon   lo quita
-  log [n]            ultimas n lineas del log
+  reconcile          como up pero silencioso e idempotente (lo usa watch)
+  watch              reconcile en loop cada VPNNAT_POLL_INTERVAL segundos,
+                     en primer plano. Nada reaplica el estado tras un
+                     reinicio: hay que correr `up` o dejar `watch` corriendo
+  log [n]            ultimas n lineas del log (root)
   help               esto
 
 Config (arriba de vpnnat.zsh, se puede sobreescribir en ~/.zshrc despues
 del source): VPNNAT_VM_SUBNETS, VPNNAT_EXPECTED_GATEWAYS, VPNNAT_SCOPE,
 VPNNAT_ALLOWED_NETS, VPNNAT_BLOCK_WHEN_DOWN, VPNNAT_CORP_NETS,
-VPNNAT_VM_SSH, VPNNAT_POLL_INTERVAL.
+VPNNAT_VM_SSH, VPNNAT_POLL_INTERVAL, VPNNAT_BROAD_PREFIX.
 HELP
 }
 
-_vpnnat_cmd_log() { tail -n "${1:-40}" "$VPNNAT_LOG" 2>/dev/null || _vpnnat_say "sin log en $VPNNAT_LOG" }
+_vpnnat_cmd_log() {
+  [[ -e $VPNNAT_LOG ]] || { _vpnnat_say "sin log en $VPNNAT_LOG"; return 0 }
+  if [[ -r $VPNNAT_LOG ]]; then
+    tail -n "${1:-40}" "$VPNNAT_LOG"
+  else
+    _vpnnat_need_root "leer $VPNNAT_LOG" || return 1
+    _vpnnat_sudo tail -n "${1:-40}" "$VPNNAT_LOG"
+  fi
+}
 
 vpnnat() {
   local cmd=${1:-status}
@@ -938,14 +976,8 @@ vpnnat() {
     doctor|dr)        _vpnnat_cmd_doctor "$@" ;;
     reconcile)        _vpnnat_cmd_reconcile "$@" ;;
     watch)            _vpnnat_cmd_watch "$@" ;;
-    install-daemon)   _vpnnat_cmd_install_daemon "$@" ;;
-    uninstall-daemon) _vpnnat_cmd_uninstall_daemon "$@" ;;
     log)              _vpnnat_cmd_log "$@" ;;
     help|-h|--help)   _vpnnat_cmd_help ;;
     *) _vpnnat_warn "comando desconocido: $cmd"; _vpnnat_cmd_help; return 1 ;;
   esac
 }
-
-# Recordar de donde se sourceo, para el LaunchDaemon
-: ${VPNNAT_SOURCE:=${${(%):-%x}:A}}
-export VPNNAT_SOURCE

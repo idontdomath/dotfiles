@@ -38,8 +38,12 @@ vpnnat setup            # once: register the pf anchors
 vpnnat up               # reconcile with the currently active tunnels
 vpnnat status           # what is loaded vs what should be
 vpnnat doctor           # diagnose pf, forwarding, stale rules, connectivity
-vpnnat install-daemon   # reconcile automatically on network changes and at boot
+vpnnat watch            # reconcile in a loop, in the foreground
 ```
+
+There is deliberately no LaunchDaemon: running one as root while it re-sources a
+script from a user-writable git checkout would turn any compromise of the user
+account into persistent root. See the Security notes in `CLAUDE.md`.
 
 Configuration lives at the top of `vpnnat.zsh` and can be overridden in
 `~/.zshrc` after the `source`: `VPNNAT_VM_SUBNETS`, `VPNNAT_EXPECTED_GATEWAYS`,
